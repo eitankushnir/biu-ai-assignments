@@ -1,0 +1,10 @@
+__pycache__/
+*.txt
+ex2 - astar.py
+ex2 - value iteration.py
+ex2-cp.py
+ex2_check_old.py
+ex2_random.py
+visual.py
+*.pdf
+

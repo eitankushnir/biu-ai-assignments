@@ -121,7 +121,6 @@ class Controller:
 
             # When a blocker cannot be moved, make him a wall and cause a recalculation.
             self.problem['Walls'].add(blocker[1]) # Add new robot as wall.
-            self.problem['Plants'] = self._get_reachable_plants(self.problem)
             self.cached_plan = []
             self.last_state = None
             return "RESET"
@@ -225,7 +224,7 @@ class Controller:
             return [sorted_probs[0][0]]
 
         # else get the 3 bots with > 0.9
-        return high_quality[:3]
+        return [high_quality[0]]
 
     def _prune_problem(self, horizon):
         optimized_prob = self.problem.copy()
@@ -238,54 +237,41 @@ class Controller:
                 for rid in self.active_robot_ids
         }
 
-        plants = self.problem['Plants']
+        plants = self._get_reachable_plants(self.problem)
+        self.problem['Plants'] = plants
         taps = self.problem['Taps']
         rewards_map = self.problem['plants_reward']
 
-        optimized_prob['Plants'] = self._get_reachable_plants(self.problem)
+        optimized_prob['Plants'] = plants
         optimized_prob['Taps'] = taps
 
-        if not taps: 
+        if not taps or self.rows * self.cols <= 16: 
             return optimized_prob
 
         tap_coords = list(taps.keys())
-        hub_r = np.mean([t[0] for t in tap_coords])
-        hub_c = np.mean([t[1] for t in tap_coords])
-
-        plant_metrics = []
-        for pos, need in plants.items():
-            dist = abs(pos[0] - hub_r) + abs(pos[1] - hub_c)
-            cost = 2 * dist + need
-
-            rewards = rewards_map.get(pos, [0])
-            avg_rwd = sum(rewards) / len(rewards)
-
-            ratio = avg_rwd / (cost + 1)
-
-            plant_metrics.append({
-                'pos': pos,
-                'need': need,
-                'cost': cost,
-                'ratio': ratio
-            })
-
-        total_work = sum(p['cost'] for p in plant_metrics)
-
         # Reduce total steps to accout for failure / needing to move other robots away.
-        capcity = horizon * self.EFFICIENCY_FACTOR
 
-        if total_work > capcity:
-            plant_metrics.sort(key=lambda x: x['ratio'], reverse=True)
+        min_plants = (0, 0)
+        best_score = 0
+        rob = self.problem["Robots"][self.active_robot_ids[0]]
+        for pos, need in plants.items():
+            rwds = rewards_map.get(pos, [0])
+            avg_reward = sum(rwds) / len(rwds)
 
-            keep_plants = {}
-            current_load = 0
-            for p in plant_metrics:
-                if current_load + p['cost'] < capcity:
-                    keep_plants[p['pos']] = p['need']
-                    current_load += p['cost']
+            dist_to_bot = abs(pos[0] - rob[0]) + abs(pos[1] - rob[1])
+            min_dist_to_tap = min([abs(pos[0] - tr) + abs(pos[1] - tc) for (tr, tc) in tap_coords])
+            min_dist_bot_to_tap = min([abs(rob[0] - tr) + abs(rob[1] - tc) for (tr, tc) in tap_coords])
 
-            optimized_prob["Plants"] = keep_plants
+            total_dist = min_dist_bot_to_tap + dist_to_bot + min_dist_to_tap
+            score = (avg_reward ** 2) / (total_dist + need + 1.0)
 
+            if score > best_score:
+                best_score = score
+                min_plants = (pos, need)
+                
+
+        keep = { min_plants[0]: min_plants[1] }
+        optimized_prob["Plants"] = keep
         return optimized_prob
 
     def _get_reachable_cells(self, start_positions):
