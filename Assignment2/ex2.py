@@ -22,7 +22,8 @@ class Controller:
         self.rows, self.cols = self.problem['Size']
         self.walls = self.problem['Walls']
 
-        self.active_robot_ids = self._get_best_robots()
+        probs = self.problem['robot_chosen_action_prob']
+        self.active_robot_ids = [max(probs, key=lambda rid: (probs[rid], self.original_game.get_capacities()[rid]))]
         self.EFFICIENCY_FACTOR = self.problem['robot_chosen_action_prob'][self.active_robot_ids[-1]]
         # Eff factor is the p of the worst active robot
         
@@ -43,6 +44,7 @@ class Controller:
             self.last_state = None
             self.last_action = None
             self.plan = []
+            print("RESET")
         
         if not self.plan:
             # If i didnt cache the astar solution then that's what we do at the start.
@@ -50,6 +52,7 @@ class Controller:
                 pruned = self._prune_problem(self.original_game.get_max_steps() - self.original_game.get_current_steps())
                 self.plan = self.solve_problem(pruned, 'astar')
                 self.cached_plan = self.plan.copy()
+                return "RESET"
 
             elif is_reset:
                 remaining_steps = self.original_game.get_max_steps() - self.original_game.get_current_steps()
@@ -91,6 +94,7 @@ class Controller:
         action = self.plan.pop(0)
         self.last_action = action
         self.last_state = state
+        print(action)
         return action
 
     def _check_blocking_dumbot(self, state, next_action_str):
@@ -120,7 +124,8 @@ class Controller:
                     return f"{move_dir}({blocker_id})"
 
             # When a blocker cannot be moved, make him a wall and cause a recalculation.
-            self.problem['Walls'].add(blocker[1]) # Add new robot as wall.
+            if blocker[1] not in self.problem["Plants"].keys():
+                self.problem['Walls'].add(blocker[1]) # Add new robot as wall. not on a plant tho
             self.cached_plan = []
             self.last_state = None
             return "RESET"
@@ -245,7 +250,7 @@ class Controller:
         optimized_prob['Plants'] = plants
         optimized_prob['Taps'] = taps
 
-        if not taps or self.rows * self.cols <= 16: 
+        if not taps: 
             return optimized_prob
 
         tap_coords = list(taps.keys())
@@ -271,6 +276,14 @@ class Controller:
                 
 
         keep = { min_plants[0]: min_plants[1] }
+        if not plants:
+            print("No plants?")
+            return optimized_prob
+        for pos in plants.copy():
+            if pos != min_plants[0]:
+                self.problem["Walls"].add(pos)
+                # self.problem["Plants"].pop(pos, None)
+                # optimized_prob["Walls"].add(pos)
         optimized_prob["Plants"] = keep
         return optimized_prob
 
