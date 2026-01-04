@@ -1,14 +1,10 @@
 from __future__ import generators
-from numpy.char import index
-import numpy as np
-import re
 import math
 import random
 import sys
 import ext_plant
-import time
 import copy
-import operator, math, random, copy, sys, os.path, bisect, inspect
+import operator, os.path, bisect, inspect
 
 id = ["328149547"]
 
@@ -56,7 +52,6 @@ class Controller:
             self.last_state = None
             self.last_action = None
             self.plan = []
-            print("RESET")
         
         if not self.plan:
             # If i didnt cache the astar solution then that's what we do at the start.
@@ -147,7 +142,6 @@ class Controller:
         action = self.plan.pop(0)
         self.last_action = action
         self.last_state = state
-        # print(action)
         return action
     
     def inject_loads_and_pours(self, plant_need):
@@ -355,17 +349,6 @@ class Controller:
             else:
                 keep = plants_dict
                 
-            
-
-
-        # if not plants:
-        #     print("No plants?")
-        #     return optimized_prob
-        # for pos in plants.copy():
-        #     if pos != min_plants[0]:
-        #         self.problem["Walls"].add(pos)
-        #         # self.problem["Plants"].pop(pos, None)
-        #         # optimized_prob["Walls"].add(pos)
         optimized_prob["Plants"] = keep
         return optimized_prob
 
