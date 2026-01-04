@@ -527,7 +527,7 @@ problem_new4_version2 = {
     "horizon": 40,
 }
 
-PROBLEM_CONFIG = problem_pdf
+PROBLEM_CONFIG = problem_new3_version3
 # =============================================================================
 #  THE VISUALIZER CLASS
 # =============================================================================
@@ -535,6 +535,7 @@ class WaterWorldGUI:
     def __init__(self, root, controller_class, problem_config):
         self.root = root
         self.root.title("Water World AI Visualizer")
+        problem_config["seed"] = 13
         self.problem = problem_config
         self.ControllerClass = controller_class
         
@@ -692,7 +693,7 @@ class WaterWorldGUI:
         
         # --- STATUS & INFO ---
         max_steps = self.problem.get('horizon', '?')
-        self.lbl_status.config(text=f"Step: {snap['step']} / {max_steps} | Reward: {snap['reward']}")
+        self.lbl_status.config(text=f"Step: {snap['step']} / {max_steps} | Reward: {self.game.get_current_reward()}")
         self.lbl_action.config(text=f"Action: {snap['action']}", foreground="blue")
         
         res_color = "green" if "SUCCESS" in snap['result'] else "red"
