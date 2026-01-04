@@ -1,5 +1,5 @@
 from __future__ import generators
-from collections import deque
+from numpy.char import index
 import numpy as np
 import re
 import math
@@ -21,9 +21,19 @@ class Controller:
         self.problem = game.get_problem()
         self.rows, self.cols = self.problem['Size']
         self.walls = self.problem['Walls']
+        self.is_small_world = self.rows * self.cols <= 9
 
-        probs = self.problem['robot_chosen_action_prob']
-        self.active_robot_ids = [max(probs, key=lambda rid: (probs[rid], self.original_game.get_capacities()[rid]))]
+        self.probs = self.problem['robot_chosen_action_prob']
+        self.caps = self.original_game.get_capacities()
+        self.means = {}
+        for pos in self.problem["Plants"].keys():
+            mean = sum(self.problem["plants_reward"][pos]) / len(self.problem["plants_reward"][pos])
+            self.means[pos] = mean
+
+        self.plant_for_robot = {}
+        self._get_target_plants()
+
+        self.active_robot_ids = self._get_best_robots()
         self.EFFICIENCY_FACTOR = self.problem['robot_chosen_action_prob'][self.active_robot_ids[-1]]
         # Eff factor is the p of the worst active robot
         
@@ -31,6 +41,8 @@ class Controller:
         self.cached_plan = None
         self.last_state = None
         self.last_action = None
+        self.dist_to_first_pour = 0
+        self.dist_to_second_pour = 0
 
   
     def choose_next_action(self, state):
@@ -51,29 +63,43 @@ class Controller:
             if not self.cached_plan:
                 pruned = self._prune_problem(self.original_game.get_max_steps() - self.original_game.get_current_steps())
                 self.plan = self.solve_problem(pruned, 'astar')
+
+                plant_need = self.plant_for_robot.get(self.active_robot_ids[0], None)
+                if not plant_need:
+                    plant_need = sum(need for _, need in pruned["Plants"]) / len(pruned["Plants"])
+                else:
+                    plant_need = plant_need[1]
+                self.inject_loads_and_pours(plant_need)
                 self.cached_plan = self.plan.copy()
-                return "RESET"
 
             elif is_reset:
-                remaining_steps = self.original_game.get_max_steps() - self.original_game.get_current_steps()
-                should_continue_aster = len(self.cached_plan) <= remaining_steps * self.EFFICIENCY_FACTOR
-
-                if should_continue_aster:
-                    self.plan = self.cached_plan.copy()
-
-                # Not enough steps to continue 
-                else:
-                    reprune = self._prune_problem(remaining_steps)
-                    self.plan = self.solve_problem(reprune, 'gbfs')
-
-                # New plan generation failed.
-                if not self.plan:
-                    return "RESET"
+                self.plan = self.cached_plan.copy()
 
             # Finished the plan but not all plants were watered
             if not self.plan:
                 self.last_state = None
                 return "RESET"
+
+            stack = self.plan.copy()
+            index_of_last_pour = 0
+            dist_to_first_pour = 0
+            dist_to_second_pour = 0
+            while stack and 'POUR' not in stack[0]:
+                if 'LOAD' not in stack[0]:
+                    dist_to_first_pour += 1
+                stack.pop(0)
+                index_of_last_pour += 1
+            while stack and 'POUR' in stack[0]:
+                stack.pop(0)
+                index_of_last_pour += 1
+            while stack and 'POUR' not in stack[0]:
+                if 'LOAD' not in stack[0]:
+                    dist_to_second_pour += 1
+                stack.pop(0)
+
+            if dist_to_second_pour > dist_to_first_pour + 1 and not self.is_small_world:
+                self.plan = self.plan[:index_of_last_pour]
+        
 
         # Check for fixes after last step
         if self.last_action and self.last_state and not is_reset:
@@ -83,6 +109,33 @@ class Controller:
                     self.plan.insert(0, step)
 
         next_action = self.plan[0]
+        if 'POUR' in next_action:
+            rid = int(next_action[next_action.find("(")+1:next_action.find(")")])
+            curr_r = next(r for r in state[0] if r[0] == rid)
+            curr_pos = curr_r[1]
+            curr_load = curr_r[2]
+            curr_need = next((p[1] for p in state[1] if p[0] == curr_pos), None)
+            if (not curr_need or curr_need == 0) or curr_load == 0:
+                self.plan.pop(0)
+                return self.choose_next_action(state)
+
+        if 'LOAD' in next_action:
+            rid = int(next_action[next_action.find("(")+1:next_action.find(")")])
+            curr_r = next(r for r in state[0] if r[0] == rid)
+            curr_load = curr_r[2]
+            curr_pos = curr_r[1]
+            curr_cap = self.caps[rid]
+            curr_avail = next((p[1] for p in state[2] if p[0] == curr_pos), None)
+
+            if not self.is_small_world:
+                plant_need = self.plant_for_robot.get(self.active_robot_ids[0], None)
+                if plant_need and curr_load > plant_need[1] * (2 - self.probs[self.active_robot_ids[0]]):
+                    self.plan.pop(0)
+                    return self.choose_next_action(state)
+            if not curr_avail or curr_avail == 0 or curr_load >= curr_cap:
+                self.plan.pop(0)
+                return self.choose_next_action(state)
+
 
         # Check for blocking bots
         unblocking_move = self._check_blocking_dumbot(state, next_action)
@@ -94,8 +147,30 @@ class Controller:
         action = self.plan.pop(0)
         self.last_action = action
         self.last_state = state
-        print(action)
+        # print(action)
         return action
+    
+    def inject_loads_and_pours(self, plant_need):
+        skip = False
+        fail_rate = 1 - self.probs[self.active_robot_ids[0]]
+        injection_count = math.ceil((fail_rate + 1) * plant_need)
+        new_plan = []
+        for i, action in enumerate(self.plan):
+            if 'LOAD' in action and not skip:
+                skip = True
+                for j in range(injection_count):
+                    new_plan.append(action)
+
+            elif 'POUR' in action and not skip:
+                skip = True
+                for j in range(injection_count):
+                    new_plan.append(action)
+
+            elif 'LOAD' not in action and 'POUR' not in action:
+                skip = False
+                new_plan.append(action)
+        self.plan = new_plan
+
 
     def _check_blocking_dumbot(self, state, next_action_str):
         try:
@@ -218,18 +293,17 @@ class Controller:
         return solve_problems(problem, algo)
 
     def _get_best_robots(self):
-        probs = self.problem['robot_chosen_action_prob']
-
-        # Get all bots with p > 0.9
-        sorted_probs = sorted(probs.items(), key=lambda x: x[1], reverse=True)
-        high_quality = [rid for rid, p in sorted_probs if p > 0.9]
+        high_quality = sorted([rid for rid in self.problem["Robots"].keys()], key=lambda x: self._robot_score(x), reverse=True)
 
         # if there are non get the bot with best p
-        if not high_quality:
-            return [sorted_probs[0][0]]
+        return high_quality[:1]
 
-        # else get the 3 bots with > 0.9
-        return [high_quality[0]]
+    def _robot_score(self, rid):
+        p = self.probs[rid]
+        cap = self.caps[rid]
+        p_pos, p_need, p_dist = self.plant_for_robot[rid]
+        return 100 * p - p_dist + p_need + cap
+        
 
     def _prune_problem(self, horizon):
         optimized_prob = self.problem.copy()
@@ -253,39 +327,68 @@ class Controller:
         if not taps: 
             return optimized_prob
 
-        tap_coords = list(taps.keys())
         # Reduce total steps to accout for failure / needing to move other robots away.
 
-        min_plants = (0, 0)
-        best_score = 0
-        rob = self.problem["Robots"][self.active_robot_ids[0]]
-        for pos, need in plants.items():
-            rwds = rewards_map.get(pos, [0])
-            avg_reward = sum(rwds) / len(rwds)
+        keep = {}
+        if not self.is_small_world:
+            for rid, (pos, need, _) in self.plant_for_robot.items():
+                if rid in self.active_robot_ids:
+                    keep[pos] = need
+        else:
+            avg_total_reward = 0
+            plants_dict = {}
+            best_reward = 0
+            for pos, need in plants.items():
+                rwds = rewards_map.get(pos, [0])
+                avg_reward = sum(rwds) / len(rwds)
 
-            dist_to_bot = abs(pos[0] - rob[0]) + abs(pos[1] - rob[1])
-            min_dist_to_tap = min([abs(pos[0] - tr) + abs(pos[1] - tc) for (tr, tc) in tap_coords])
-            min_dist_bot_to_tap = min([abs(rob[0] - tr) + abs(rob[1] - tc) for (tr, tc) in tap_coords])
+                plants_dict[pos] = need
+                avg_total_reward += avg_reward
 
-            total_dist = min_dist_bot_to_tap + dist_to_bot + min_dist_to_tap
-            score = (avg_reward ** 2) / (total_dist + need + 1.0)
+                if best_reward < avg_reward:
+                    best_reward = avg_reward
+                    best_pos = pos
+            avg_total_reward /= len(plants)
 
-            if score > best_score:
-                best_score = score
-                min_plants = (pos, need)
+            if best_reward > avg_total_reward * 1.5:
+                keep[best_pos] = plants_dict[best_pos]
+            else:
+                keep = plants_dict
                 
+            
 
-        keep = { min_plants[0]: min_plants[1] }
-        if not plants:
-            print("No plants?")
-            return optimized_prob
-        for pos in plants.copy():
-            if pos != min_plants[0]:
-                self.problem["Walls"].add(pos)
-                # self.problem["Plants"].pop(pos, None)
-                # optimized_prob["Walls"].add(pos)
+
+        # if not plants:
+        #     print("No plants?")
+        #     return optimized_prob
+        # for pos in plants.copy():
+        #     if pos != min_plants[0]:
+        #         self.problem["Walls"].add(pos)
+        #         # self.problem["Plants"].pop(pos, None)
+        #         # optimized_prob["Walls"].add(pos)
         optimized_prob["Plants"] = keep
         return optimized_prob
+
+    def _get_target_plants(self):
+        tap_coords = self.problem["Taps"].keys()
+        for rid, rob in self.problem["Robots"].items():
+            best_plant = (0, 0)
+            best_score = 0
+            for pos, need in self.problem["Plants"].items():
+                avg_reward = self.means.get(pos, 0)
+
+                dist_to_bot = abs(pos[0] - rob[0]) + abs(pos[1] - rob[1])
+                min_dist_to_tap = min([abs(pos[0] - tr) + abs(pos[1] - tc) for (tr, tc) in tap_coords])
+                min_dist_bot_to_tap = min([abs(rob[0] - tr) + abs(rob[1] - tc) for (tr, tc) in tap_coords])
+
+                total_dist = min_dist_bot_to_tap + dist_to_bot + min_dist_to_tap
+                score = (avg_reward ** 2) / (total_dist + need + 1.0)
+
+                if score > best_score:
+                    best_score = score
+                    best_plant = (pos, need, dist_to_bot)
+
+            self.plant_for_robot[rid] = best_plant
 
     def _get_reachable_cells(self, start_positions):
         """
